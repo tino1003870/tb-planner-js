@@ -322,6 +322,15 @@ function parseVTodo(calendarText) {
         }
     }
 
+    console.log(
+        "[TB-PLANNER DEBUG] PARSED VTODO",
+        "SUMMARY=" + (todo.summary || ""),
+        "DTSTART=" + (todo.dtstart || ""),
+        "DTSTART-PARAMS=" + (todo.dtstartParameters || ""),
+        "DUE=" + (todo.due || ""),
+        "DUE-PARAMS=" + (todo.dueParameters || "")
+    );
+
     return todo;
 }
 
