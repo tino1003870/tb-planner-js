@@ -1,5 +1,132 @@
 import { executeCalDavRequest } from "./caldav.js";
 
+
+/*
+ * TB Planner Druckfunktion
+ *
+ * Druckt das aktuell sichtbare Fenster über Electron.
+ * Elemente mit der Klasse "hidden" werden nicht gedruckt.
+ */
+async function printPlanner() {
+
+    if (
+        !window.electronAPI ||
+        typeof window.electronAPI.printPreview !==
+            "function"
+    ) {
+
+        setStatus(
+            "Druck: Druckvorschau nicht verfügbar."
+        );
+
+        return;
+    }
+
+    try {
+
+        setStatus(
+            "Druckvorschau wird geöffnet ..."
+        );
+
+        const result =
+            await window.electronAPI
+                .printPreview(
+                    currentTodos
+                );
+
+        if (result === true) {
+
+            setStatus(
+                "Druckvorschau geöffnet."
+            );
+
+        } else {
+
+            setStatus(
+                "Druckvorschau konnte nicht geöffnet werden."
+            );
+
+        }
+
+    } catch (error) {
+
+        console.error(
+            "PRINT PREVIEW ERROR:",
+            error
+        );
+
+        setStatus(
+            `Druck: ERROR – ${error.message}`
+        );
+
+    }
+
+}
+
+
+/*
+ * Druckbutton erzeugen.
+ *
+ * Er wird in den bestehenden Toolbar-Bereich eingefügt,
+ * ohne die vorhandene Planner-/Task-Logik zu verändern.
+ */
+const printButton =
+    document.createElement("button");
+
+printButton.type = "button";
+printButton.id = "printButton";
+printButton.textContent = "Drucken";
+
+printButton.addEventListener(
+    "click",
+    printPlanner
+);
+
+const plannerToolbar =
+    document.querySelector(".planner-toolbar");
+
+if (!plannerToolbar) {
+
+    console.error(
+        "FEHLER: .planner-toolbar nicht gefunden."
+    );
+
+} else {
+
+    /*
+     * Eigenen Bereich für Datei-/Druckfunktionen erzeugen.
+     */
+    const printSection =
+        document.createElement("div");
+
+    printSection.className =
+        "toolbar-section print-section";
+
+    const printTitle =
+        document.createElement("div");
+
+    printTitle.className =
+        "toolbar-section-title";
+
+    printTitle.textContent =
+        "Ausgabe";
+
+    const printGroup =
+        document.createElement("div");
+
+    printGroup.className =
+        "toolbar-group";
+
+    printGroup.appendChild(printButton);
+
+    printSection.appendChild(printTitle);
+    printSection.appendChild(printGroup);
+
+    plannerToolbar.appendChild(printSection);
+
+}
+
+
 const statusElement =
     document.getElementById("status");
 

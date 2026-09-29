@@ -913,3 +913,36 @@ button:disabled {
     overflow: visible;
 }
 
+
+
+/*
+ * TB Planner – Druck
+ *
+ * Hidden-Elemente werden nicht gedruckt.
+ * Der restliche Inhalt bleibt unverändert.
+ */
+@media print {
+
+    .hidden,
+    .debug-panel,
+    .planner-toolbar,
+    .planner-header {
+        display: none !important;
+    }
+
+    body {
+        margin: 0;
+        padding: 0;
+    }
+
+    .planner-main {
+        width: 100%;
+        margin: 0;
+        padding: 0;
+    }
+
+    .todo-editor {
+        display: none !important;
+    }
+
+}
