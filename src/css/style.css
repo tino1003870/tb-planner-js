@@ -143,13 +143,47 @@ button:disabled {
 .task-toolbar,
 .planner-toolbar {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
 
-    gap: 6px;
+    gap: 10px;
 
     flex-wrap: wrap;
 
     margin-top: 7px;
+}
+
+
+/* ------------------------------------------------------------
+   Toolbar sections
+   ------------------------------------------------------------ */
+
+.toolbar-section {
+    display: flex;
+    flex-direction: column;
+
+    gap: 3px;
+
+    padding: 0 10px 0 0;
+
+    border-right: 1px solid #c8c8c8;
+}
+
+.toolbar-section:last-child {
+    border-right: none;
+    padding-right: 0;
+}
+
+.toolbar-section-title {
+    height: 16px;
+
+    font-size: 11px;
+    font-weight: 600;
+
+    color: #666;
+
+    padding-left: 2px;
+
+    line-height: 16px;
 }
 
 .toolbar-group {
@@ -157,20 +191,14 @@ button:disabled {
     align-items: center;
 
     gap: 4px;
-
-    padding-right: 8px;
-
-    border-right: 1px solid #ccc;
 }
 
-.toolbar-group:last-child {
-    border-right: none;
+.toolbar-group button {
+    white-space: nowrap;
 }
 
-.zoom-group span {
-    margin-right: 2px;
-
-    font-size: 13px;
+.zoom-group {
+    gap: 4px;
 }
 
 
@@ -745,6 +773,27 @@ button:disabled {
     display: flex;
     gap: 6px;
 }
+
+.editor-info-grid input[type="date"],
+.editor-info-grid input[type="number"] {
+    box-sizing: border-box;
+    font: inherit;
+    padding: 3px 5px;
+    border: 1px solid #aaa;
+    background: white;
+}
+
+.editor-info-grid input[type="number"] {
+    width: 70px;
+}
+
+.editor-info-grid input:disabled {
+    background: #eeeeee;
+    color: #555;
+}
+
+
+
 
 .editor-info-grid label {
     font-weight: 600;

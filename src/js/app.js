@@ -19,6 +19,14 @@ let currentTodos = [];
 
 let selectedTodo = null;
 
+let creatingTodo = false;
+
+/*
+ * true  = bestehender Task wird aktiv bearbeitet
+ * false = Task nur ausgewählt / Readonly
+ */
+let editingTodo = false;
+
 function debugLog(message, data) {
     let text = String(message);
 
@@ -323,7 +331,744 @@ function parseIcsDate(value) {
 /*
  * Display VTODOs
  */
+
+let timelineZoom = "day";
+
+
+/*
+ * ISO calendar week.
+ *
+ * Returns the ISO week number (1..53).
+ */
+function getIsoWeek(date) {
+
+    const d = new Date(date);
+
+    d.setHours(0, 0, 0, 0);
+
+    /*
+     * ISO week: Thursday determines the week year.
+     */
+    d.setDate(
+        d.getDate() +
+        3 -
+        ((d.getDay() + 6) % 7)
+    );
+
+    const week1 =
+        new Date(
+            d.getFullYear(),
+            0,
+            4
+        );
+
+    return (
+        1 +
+        Math.round(
+            (
+                d.getTime() -
+                week1.getTime()
+            ) /
+            86400000 /
+            7
+        )
+    );
+
+}
+
+
+/*
+ * =========================================================
+ * WBS / Planner-Struktur
+ * =========================================================
+ *
+ * Diese Funktionen arbeiten auf den Original-VTODOs in
+ * currentTodos. displayTodos() verwendet für die Anzeige
+ * dagegen Kopien.
+ */
+
+function plannerWbsParts(value) {
+
+    if (!value) {
+        return [];
+    }
+
+    return String(value)
+        .split(".")
+        .map(part => {
+            const n = Number(part);
+
+            return Number.isFinite(n)
+                ? n
+                : Number.MAX_SAFE_INTEGER;
+        });
+
+}
+
+
+function plannerWbsCompare(a, b) {
+
+    const aa =
+        plannerWbsParts(a.todo.wbs);
+
+    const bb =
+        plannerWbsParts(b.todo.wbs);
+
+    const length =
+        Math.max(
+            aa.length,
+            bb.length
+        );
+
+    for (let i = 0; i < length; i++) {
+
+        const av =
+            aa[i] ??
+            Number.MAX_SAFE_INTEGER;
+
+        const bv =
+            bb[i] ??
+            Number.MAX_SAFE_INTEGER;
+
+        if (av !== bv) {
+            return av - bv;
+        }
+
+    }
+
+    const ao =
+        Number.isFinite(a.todo.order)
+            ? a.todo.order
+            : Number.MAX_SAFE_INTEGER;
+
+    const bo =
+        Number.isFinite(b.todo.order)
+            ? b.todo.order
+            : Number.MAX_SAFE_INTEGER;
+
+    return ao - bo;
+
+}
+
+
+function buildPlannerOperationTree() {
+
+    const byUid =
+        new Map();
+
+    for (const todo of currentTodos) {
+
+        byUid.set(
+            todo.uid,
+            {
+                todo,
+                parentNode: null,
+                children: []
+            }
+        );
+
+    }
+
+    const roots = [];
+
+    for (const node of byUid.values()) {
+
+        const parentUid =
+            node.todo.parent || "";
+
+        if (
+            parentUid &&
+            byUid.has(parentUid)
+        ) {
+
+            const parent =
+                byUid.get(parentUid);
+
+            node.parentNode =
+                parent;
+
+            parent.children.push(
+                node
+            );
+
+        } else {
+
+            roots.push(node);
+
+        }
+
+    }
+
+    const sortNodes = nodes => {
+
+        nodes.sort(
+            plannerWbsCompare
+        );
+
+        for (const node of nodes) {
+            sortNodes(node.children);
+        }
+
+    };
+
+    sortNodes(roots);
+
+    return {
+        roots,
+        byUid
+    };
+
+}
+
+
+function normalizePlannerWbs(nodes, prefix = "", parentUid = "") {
+
+    nodes.forEach(
+        (node, index) => {
+
+            const number =
+                index + 1;
+
+            node.todo.parent =
+                parentUid;
+
+            node.todo.order =
+                number;
+
+            node.todo.wbs =
+                prefix
+                    ? `${prefix}.${number}`
+                    : `${number}`;
+
+            normalizePlannerWbs(
+                node.children,
+                node.todo.wbs,
+                node.todo.uid
+            );
+
+        }
+    );
+
+}
+
+
+function getNewTaskPlacement(referenceTodo) {
+
+    /*
+     * WBS is the authoritative structure.
+     *
+     * Examples:
+     *
+     *   selected 3       -> new task 4
+     *   selected 3.1     -> new task 3.2
+     *   selected 3.2     -> new task 3.3
+     *   selected 2.4.1   -> new task 2.4.2
+     *
+     * We deliberately do not rely on parent/order here because
+     * these fields may be missing or stale in a freshly loaded
+     * CalDAV VTODO.
+     */
+
+    const referenceWbs =
+        String(referenceTodo?.wbs || "").trim();
+
+    /*
+     * No usable WBS:
+     * create a new root task after the highest existing root.
+     */
+    if (!referenceWbs) {
+
+        let nextRoot =
+            1;
+
+        for (const todo of currentTodos) {
+
+            const wbs =
+                String(todo.wbs || "").trim();
+
+            if (!wbs || wbs.includes(".")) {
+                continue;
+            }
+
+            const n =
+                Number(wbs);
+
+            if (Number.isFinite(n)) {
+                nextRoot =
+                    Math.max(
+                        nextRoot,
+                        n + 1
+                    );
+            }
+
+        }
+
+        return {
+            parent: "",
+            order: nextRoot,
+            wbs: String(nextRoot)
+        };
+
+    }
+
+    /*
+     * Parent WBS is everything before the last dot.
+     *
+     * 3.1     -> parent WBS 3
+     * 2.4.1   -> parent WBS 2.4
+     * 3       -> root task
+     */
+    const lastDot =
+        referenceWbs.lastIndexOf(".");
+
+    const parentWbs =
+        lastDot >= 0
+            ? referenceWbs.slice(
+                0,
+                lastDot
+            )
+            : "";
+
+    /*
+     * Find the actual parent VTODO from its WBS.
+     */
+    let parentUid = "";
+
+    if (parentWbs) {
+
+        const parent =
+            currentTodos.find(
+                todo =>
+                    String(todo.wbs || "").trim() ===
+                    parentWbs
+            );
+
+        if (parent) {
+            parentUid =
+                parent.uid || "";
+        }
+
+    }
+
+    /*
+     * For a selected child, siblings have exactly the same
+     * WBS prefix.
+     *
+     * For a selected root task, siblings are all root tasks.
+     */
+    const siblings =
+        currentTodos.filter(
+            todo => {
+
+                const wbs =
+                    String(todo.wbs || "").trim();
+
+                if (!wbs) {
+                    return false;
+                }
+
+                if (parentWbs) {
+
+                    return (
+                        wbs.startsWith(
+                            parentWbs + "."
+                        ) &&
+                        wbs.split(".").length ===
+                        parentWbs.split(".").length + 1
+                    );
+
+                }
+
+                return !wbs.includes(".");
+
+            }
+        );
+
+    let nextNumber =
+        1;
+
+    for (const todo of siblings) {
+
+        const wbs =
+            String(todo.wbs || "").trim();
+
+        const parts =
+            wbs.split(".");
+
+        const number =
+            Number(parts[parts.length - 1]);
+
+        if (Number.isFinite(number)) {
+
+            nextNumber =
+                Math.max(
+                    nextNumber,
+                    number + 1
+                );
+
+        }
+
+    }
+
+    const newWbs =
+        parentWbs
+            ? `${parentWbs}.${nextNumber}`
+            : `${nextNumber}`;
+
+    return {
+        parent: parentUid,
+        order: nextNumber,
+        wbs: newWbs
+    };
+
+}
+
+
+async function savePlannerStructure(before) {
+
+    if (!before) {
+        before =
+            new Map(
+                currentTodos.map(
+                    todo => [
+                        todo.uid,
+                        {
+                            wbs: todo.wbs || "",
+                            parent: todo.parent || "",
+                            order: Number.isFinite(todo.order)
+                                ? todo.order
+                                : undefined
+                        }
+                    ]
+                )
+            );
+    }
+
+    const changed =
+        currentTodos.filter(
+            todo => {
+
+                const old =
+                    before.get(todo.uid);
+
+                if (!old) {
+                    return true;
+                }
+
+                return (
+                    old.wbs !==
+                    (todo.wbs || "") ||
+                    old.parent !==
+                    (todo.parent || "") ||
+                    old.order !==
+                    (
+                        Number.isFinite(todo.order)
+                            ? todo.order
+                            : undefined
+                    )
+                );
+
+            }
+        );
+
+    if (changed.length === 0) {
+        return true;
+    }
+
+    setStatus(
+        `PUT WBS-Struktur (${changed.length} Task(s)) ...`
+    );
+
+    for (const todo of changed) {
+
+        const ok =
+            await putTodo(todo);
+
+        if (!ok) {
+
+            setStatus(
+                `PUT WBS-Struktur: Fehler bei "${todo.summary || todo.uid}"`
+            );
+
+            await loadTodos();
+
+            return false;
+        }
+
+    }
+
+    return true;
+
+}
+
+
+async function moveSelectedTodoStructure(operation) {
+
+    if (!selectedTodo) {
+        return;
+    }
+
+    if (creatingTodo) {
+        return;
+    }
+
+    const selectedUid =
+        selectedTodo.uid;
+
+    const tree =
+        buildPlannerOperationTree();
+
+    const node =
+        tree.byUid.get(
+            selectedUid
+        );
+
+    if (!node) {
+        setStatus(
+            "WBS: Task nicht gefunden."
+        );
+        return;
+    }
+
+    const siblings =
+        node.parentNode
+            ? node.parentNode.children
+            : tree.roots;
+
+    const index =
+        siblings.indexOf(node);
+
+    if (index < 0) {
+        return;
+    }
+
+    /*
+     * Zustand VOR der Strukturänderung sichern.
+     * Dieser Snapshot wird später für die PUT-Erkennung
+     * verwendet.
+     */
+    const before =
+        new Map(
+            currentTodos.map(
+                todo => [
+                    todo.uid,
+                    {
+                        wbs: todo.wbs || "",
+                        parent: todo.parent || "",
+                        order: Number.isFinite(todo.order)
+                            ? todo.order
+                            : undefined
+                    }
+                ]
+            )
+        );
+
+
+    /*
+     * --------------------------------------------------------
+     * Einrücken
+     * --------------------------------------------------------
+     *
+     * Der vorherige Geschwister-Task wird zum neuen Parent.
+     */
+    if (operation === "indent") {
+
+        if (index === 0) {
+
+            setStatus(
+                "Einrücken: Kein vorheriger Geschwister-Task."
+            );
+
+            return;
+        }
+
+        const newParent =
+            siblings[index - 1];
+
+        siblings.splice(
+            index,
+            1
+        );
+
+        newParent.children.push(
+            node
+        );
+
+        node.parentNode =
+            newParent;
+
+    }
+
+
+    /*
+     * --------------------------------------------------------
+     * Ausrücken
+     * --------------------------------------------------------
+     */
+    else if (operation === "outdent") {
+
+        if (!node.parentNode) {
+
+            setStatus(
+                "Ausrücken: Task ist bereits auf oberster Ebene."
+            );
+
+            return;
+        }
+
+        const oldParent =
+            node.parentNode;
+
+        const grandParent =
+            oldParent.parentNode;
+
+        const oldIndex =
+            oldParent.children.indexOf(
+                node
+            );
+
+        if (oldIndex >= 0) {
+
+            oldParent.children.splice(
+                oldIndex,
+                1
+            );
+
+        }
+
+        const targetSiblings =
+            grandParent
+                ? grandParent.children
+                : tree.roots;
+
+        const parentIndex =
+            targetSiblings.indexOf(
+                oldParent
+            );
+
+        targetSiblings.splice(
+            parentIndex + 1,
+            0,
+            node
+        );
+
+        node.parentNode =
+            grandParent || null;
+
+    }
+
+
+    /*
+     * --------------------------------------------------------
+     * Nach oben
+     * --------------------------------------------------------
+     */
+    else if (operation === "up") {
+
+        if (index === 0) {
+
+            setStatus(
+                "Verschieben: Task ist bereits oben."
+            );
+
+            return;
+        }
+
+        siblings[index] =
+            siblings[index - 1];
+
+        siblings[index - 1] =
+            node;
+
+    }
+
+
+    /*
+     * --------------------------------------------------------
+     * Nach unten
+     * --------------------------------------------------------
+     */
+    else if (operation === "down") {
+
+        if (
+            index ===
+            siblings.length - 1
+        ) {
+
+            setStatus(
+                "Verschieben: Task ist bereits unten."
+            );
+
+            return;
+        }
+
+        siblings[index] =
+            siblings[index + 1];
+
+        siblings[index + 1] =
+            node;
+
+    }
+
+
+    else {
+        return;
+    }
+
+
+    /*
+     * WBS, Parent und Order für den kompletten Baum
+     * neu nummerieren.
+     */
+    normalizePlannerWbs(
+        tree.roots
+    );
+
+
+    displayTodos(
+        currentTodos
+    );
+
+
+    const ok =
+        await savePlannerStructure(
+            before
+        );
+
+    if (!ok) {
+        return;
+    }
+
+
+    /*
+     * REPORT holt die vom Server gespeicherten VTODOs
+     * wieder ein.
+     */
+    await loadTodos();
+
+
+    selectedTodo =
+        currentTodos.find(
+            todo =>
+                todo.uid === selectedUid
+        ) || null;
+
+    updateTodoEditor();
+    updateSelectionButtons();
+    displayTodos(currentTodos);
+
+    setStatus(
+        `WBS: ${operation} erfolgreich.`
+    );
+
+}
+
+
+
+
+
 function displayTodos(todos) {
+
 
     debugLog(
         "displayTodos() aufgerufen:",
@@ -476,6 +1221,140 @@ function displayTodos(todos) {
 
 
     /*
+     * =========================================================
+     * Calculate summary-task dates.
+     *
+     * A task with children is a summary task.
+     * Its displayed Gantt range is determined recursively
+     * from the earliest start and latest due date of all
+     * descendants.
+     *
+     * The original VTODO dates are NOT modified.
+     * We only store calculated display dates on the tree nodes.
+     * =========================================================
+     */
+
+    const calculateSummaryDates = node => {
+
+        const ownStart =
+            parseIcsDate(node.dtstart);
+
+        const ownDue =
+            parseIcsDate(node.due);
+
+        /*
+         * Leaf task:
+         * use its own dates unchanged.
+         */
+        if (
+            !node.children ||
+            node.children.length === 0
+        ) {
+
+            node.displayStart =
+                ownStart;
+
+            node.displayDue =
+                ownDue;
+
+            return {
+                start: ownStart,
+                due: ownDue
+            };
+
+        }
+
+
+        /*
+         * Summary task:
+         * collect the calculated ranges of all children.
+         */
+        const starts = [];
+        const dues = [];
+
+        for (const child of node.children) {
+
+            const range =
+                calculateSummaryDates(child);
+
+            if (range.start) {
+                starts.push(range.start);
+            }
+
+            if (range.due) {
+                dues.push(range.due);
+            }
+
+        }
+
+
+        /*
+         * Use the earliest child start and latest child due.
+         */
+        let displayStart = null;
+        let displayDue = null;
+
+        if (starts.length) {
+
+            displayStart =
+                new Date(
+                    Math.min(
+                        ...starts.map(
+                            date => date.getTime()
+                        )
+                    )
+                );
+
+        }
+
+        if (dues.length) {
+
+            displayDue =
+                new Date(
+                    Math.max(
+                        ...dues.map(
+                            date => date.getTime()
+                        )
+                    )
+                );
+
+        }
+
+
+        /*
+         * If the children have no usable date information,
+         * fall back to the summary task's own dates.
+         */
+        if (!displayStart) {
+            displayStart = ownStart;
+        }
+
+        if (!displayDue) {
+            displayDue = ownDue;
+        }
+
+
+        node.displayStart =
+            displayStart;
+
+        node.displayDue =
+            displayDue;
+
+
+        return {
+            start: displayStart,
+            due: displayDue
+        };
+
+    };
+
+
+    for (const root of roots) {
+        calculateSummaryDates(root);
+    }
+
+
+    /*
      * Count.
      */
     const info =
@@ -562,17 +1441,110 @@ function displayTodos(todos) {
     );
 
 
+    /*
+     * Build timeline units according to the selected zoom.
+     *
+     * Day:
+     *     one column = one calendar day
+     *
+     * Week:
+     *     one column = one calendar week
+     *
+     * Month:
+     *     one column = one calendar month
+     *
+     * KW:
+     *     one column = one calendar week
+     *
+     * The visual width remains exactly 48 px per column.
+     */
+
     const timelineDays = [];
 
-    for (
-        let d = new Date(timelineStart);
-        d <= timelineEnd;
-        d.setDate(d.getDate() + 1)
+    if (timelineZoom === "month") {
+
+        /*
+         * Monthly timeline.
+         *
+         * One column represents one calendar month.
+         * The timeline is aligned to the first day
+         * of the month.
+         */
+        const firstMonth =
+            new Date(timelineStart);
+
+        firstMonth.setDate(1);
+        firstMonth.setHours(
+            0, 0, 0, 0
+        );
+
+        for (
+            let d = new Date(firstMonth);
+            d <= timelineEnd;
+            d.setMonth(d.getMonth() + 1)
+        ) {
+
+            timelineDays.push(
+                new Date(d)
+            );
+
+        }
+
+    } else if (
+        timelineZoom === "week" ||
+        timelineZoom === "kw"
     ) {
 
-        timelineDays.push(
-            new Date(d)
+        /*
+         * Weekly timeline.
+         *
+         * For KW we explicitly align every column
+         * to an ISO calendar week starting Monday.
+         */
+        const firstWeek =
+            new Date(timelineStart);
+
+        const dayOfWeek =
+            firstWeek.getDay();
+
+        const mondayOffset =
+            dayOfWeek === 0
+                ? -6
+                : 1 - dayOfWeek;
+
+        firstWeek.setDate(
+            firstWeek.getDate() + mondayOffset
         );
+
+        firstWeek.setHours(
+            0, 0, 0, 0
+        );
+
+        for (
+            let d = new Date(firstWeek);
+            d <= timelineEnd;
+            d.setDate(d.getDate() + 7)
+        ) {
+
+            timelineDays.push(
+                new Date(d)
+            );
+
+        }
+
+    } else {
+
+        for (
+            let d = new Date(timelineStart);
+            d <= timelineEnd;
+            d.setDate(d.getDate() + 1)
+        ) {
+
+            timelineDays.push(
+                new Date(d)
+            );
+
+        }
 
     }
 
@@ -604,25 +1576,100 @@ function displayTodos(todos) {
             cell.className =
                 "timeline-day";
 
-            if (
-                day.getDay() === 0 ||
-                day.getDay() === 6
-            ) {
+            if (timelineZoom === "month") {
 
-                cell.classList.add(
-                    "weekend"
+                /*
+                 * Month view.
+                 * Each column represents one calendar month.
+                 */
+                const monthNames = [
+                    "JAN", "FEB", "MAR", "APR",
+                    "MAY", "JUN", "JUL", "AUG",
+                    "SEP", "OCT", "NOV", "DEC"
+                ];
+
+                cell.textContent =
+                    monthNames[day.getMonth()];
+
+            } else if (timelineZoom === "kw") {
+
+                /*
+                 * Calendar week.
+                 * Monday is the first day of the
+                 * represented week.
+                 */
+                const tmp =
+                    new Date(day);
+
+                const dayNumber =
+                    tmp.getDay() || 7;
+
+                tmp.setDate(
+                    tmp.getDate() + 4 - dayNumber
                 );
+
+                const yearStart =
+                    new Date(
+                        tmp.getFullYear(),
+                        0,
+                        1
+                    );
+
+                const weekNumber =
+                    Math.ceil(
+                        (
+                            (
+                                (
+                                    tmp -
+                                    yearStart
+                                ) / 86400000
+                            ) + 1
+                        ) / 7
+                    );
+
+                cell.textContent =
+                    `KW ${String(weekNumber).padStart(2, "0")}`;
+
+            } else if (timelineZoom === "week") {
+
+                /*
+                 * Week view:
+                 * one column represents one calendar week.
+                 * The timeline is aligned to Monday, so the
+                 * header shows the Monday of that week.
+                 */
+                cell.textContent =
+                    day.toLocaleDateString(
+                        "de-DE",
+                        {
+                            day: "2-digit",
+                            month: "2-digit"
+                        }
+                    );
+
+            } else {
+
+                if (
+                    day.getDay() === 0 ||
+                    day.getDay() === 6
+                ) {
+
+                    cell.classList.add(
+                        "weekend"
+                    );
+
+                }
+
+                cell.textContent =
+                    day.toLocaleDateString(
+                        "de-DE",
+                        {
+                            day: "2-digit",
+                            month: "2-digit"
+                        }
+                    );
 
             }
-
-            cell.textContent =
-                day.toLocaleDateString(
-                    "de-DE",
-                    {
-                        day: "2-digit",
-                        month: "2-digit"
-                    }
-                );
 
             days.appendChild(cell);
 
@@ -634,7 +1681,8 @@ function displayTodos(todos) {
 
 
     /*
-     * Timeline width is based on the number of days.
+     * Timeline width is based on the number of
+     * timeline units (days, weeks or months).
      */
     const timelineWidth =
         timelineDays.length;
@@ -688,6 +1736,99 @@ function displayTodos(todos) {
             0,
             0
         );
+
+        if (timelineZoom === "month") {
+
+            /*
+             * Convert the date to the first day
+             * of its calendar month.
+             */
+            const monthOf =
+                value => {
+
+                    const result =
+                        new Date(value);
+
+                    result.setDate(1);
+
+                    result.setHours(
+                        0, 0, 0, 0
+                    );
+
+                    return result;
+                };
+
+            const dateMonth =
+                monthOf(midnight);
+
+            const timelineMonth =
+                monthOf(timelineStart);
+
+            return (
+                (
+                    dateMonth.getFullYear() -
+                    timelineMonth.getFullYear()
+                ) * 12 +
+                (
+                    dateMonth.getMonth() -
+                    timelineMonth.getMonth()
+                )
+            );
+
+        }
+
+        if (
+            timelineZoom === "week" ||
+            timelineZoom === "kw"
+        ) {
+
+            /*
+             * Convert both dates to their respective
+             * Monday.
+             *
+             * This makes a Gantt bar occupy the complete
+             * ISO calendar-week column in KW mode.
+             */
+            const mondayOf =
+                value => {
+
+                    const result =
+                        new Date(value);
+
+                    const day =
+                        result.getDay();
+
+                    result.setDate(
+                        result.getDate() -
+                        (
+                            day === 0
+                                ? 6
+                                : day - 1
+                        )
+                    );
+
+                    result.setHours(
+                        0, 0, 0, 0
+                    );
+
+                    return result;
+                };
+
+            const dateMonday =
+                mondayOf(midnight);
+
+            const timelineMonday =
+                mondayOf(timelineStart);
+
+            return Math.round(
+                (
+                    dateMonday.getTime() -
+                    timelineMonday.getTime()
+                ) /
+                (86400000 * 7)
+            );
+
+        }
 
         const diff =
             Math.round(
@@ -837,7 +1978,7 @@ function displayTodos(todos) {
             "planner-timeline";
 
         /*
-         * Background day grid.
+         * Background timeline grid.
          */
         for (const day of timelineDays) {
 
@@ -848,8 +1989,11 @@ function displayTodos(todos) {
                 "timeline-grid-cell";
 
             if (
-                day.getDay() === 0 ||
-                day.getDay() === 6
+                timelineZoom !== "week" && timelineZoom !== "kw" &&
+                (
+                    day.getDay() === 0 ||
+                    day.getDay() === 6
+                )
             ) {
 
                 cell.classList.add(
@@ -875,16 +2019,24 @@ function displayTodos(todos) {
                 due: todo.due,
                 parsedStart: parseIcsDate(todo.dtstart),
                 parsedDue: parseIcsDate(todo.due),
+                displayStart: todo.displayStart,
+                displayDue: todo.displayDue,
                 timelineStart,
                 timelineDays: timelineDays.length,
                 timelineWidth
             }
         );
 
+        /*
+         * For summary tasks use the recursively calculated
+         * range. Leaf tasks use their original VTODO dates.
+         */
         const start =
+            todo.displayStart ??
             parseIcsDate(todo.dtstart);
 
         const due =
+            todo.displayDue ??
             parseIcsDate(todo.due);
 
         if (start || due) {
@@ -1120,9 +2272,9 @@ const todoProgressValue =
         "todoProgressValue"
     );
 
-const todoStartValue =
+const todoStartInput =
     document.getElementById(
-        "todoStartValue"
+        "todoStartInput"
     );
 
 const todoDueValue =
@@ -1130,9 +2282,9 @@ const todoDueValue =
         "todoDueValue"
     );
 
-const todoDurationValue =
+const todoDurationInput =
     document.getElementById(
-        "todoDurationValue"
+        "todoDurationInput"
     );
 
 
@@ -1160,6 +2312,14 @@ function selectTodo(todo) {
                 currentTodo.uid === todo.uid
         ) || todo;
 
+    /*
+     * Ein einfacher Klick auf einen Task öffnet nur
+     * die Readonly-Darstellung.
+     */
+    if (!creatingTodo) {
+        editingTodo = false;
+    }
+
     updateTodoEditor();
 
     updateSelectionButtons();
@@ -1171,7 +2331,8 @@ function selectTodo(todo) {
 function updateSelectionButtons() {
 
     const enabled =
-        !!selectedTodo;
+        !!selectedTodo &&
+        !creatingTodo;
 
     if (renameTaskButton) {
         renameTaskButton.disabled =
@@ -1210,6 +2371,134 @@ function updateSelectionButtons() {
 }
 
 
+
+function updateTodoEditorModeIndicator(editable) {
+
+    if (!todoEditor) {
+        return;
+    }
+
+    /*
+     * Der Editor-Header enthält todoEditorTask.
+     * Wir setzen dort einen kleinen, eindeutig sichtbaren
+     * Statushinweis direkt neben den Tasknamen.
+     */
+    if (todoEditorTask) {
+
+        let badge =
+            document.getElementById(
+                "todoEditorModeBadge"
+            );
+
+        if (!badge) {
+
+            badge =
+                document.createElement("span");
+
+            badge.id =
+                "todoEditorModeBadge";
+
+            badge.style.display =
+                "inline-block";
+
+            badge.style.marginLeft =
+                "14px";
+
+            badge.style.padding =
+                "2px 8px";
+
+            badge.style.borderRadius =
+                "3px";
+
+            badge.style.fontSize =
+                "12px";
+
+            badge.style.fontWeight =
+                "bold";
+
+            todoEditorTask.parentElement?.appendChild(
+                badge
+            );
+
+        }
+
+        if (editable) {
+
+            badge.textContent =
+                "BEARBEITEN";
+
+            badge.style.background =
+                "#d9ead3";
+
+            badge.style.color =
+                "#274e13";
+
+        } else {
+
+            badge.textContent =
+                "READ-ONLY";
+
+            badge.style.background =
+                "#e0e0e0";
+
+            badge.style.color =
+                "#555";
+
+        }
+
+    }
+
+    /*
+     * Die statische Überschrift im Editor wird ebenfalls
+     * angepasst. Wir suchen nicht nach einem bestimmten
+     * HTML-Element, sondern nach dem tatsächlichen Text.
+     */
+    const header =
+        todoEditorTask?.parentElement;
+
+    if (header) {
+
+        const walker =
+            document.createTreeWalker(
+                header,
+                NodeFilter.SHOW_TEXT
+            );
+
+        const textNodes = [];
+
+        let node;
+
+        while (
+            node = walker.nextNode()
+        ) {
+            textNodes.push(node);
+        }
+
+        for (const textNode of textNodes) {
+
+            const text =
+                textNode.nodeValue.trim();
+
+            if (
+                text === "VTODO bearbeiten" ||
+                text === "VTODO anzeigen"
+            ) {
+
+                textNode.nodeValue =
+                    editable
+                        ? "VTODO bearbeiten "
+                        : "VTODO anzeigen ";
+
+                break;
+            }
+
+        }
+
+    }
+
+}
+
+
 function updateTodoEditor() {
 
     if (!selectedTodo) {
@@ -1221,8 +2510,24 @@ function updateTodoEditor() {
         return;
     }
 
+    const editable =
+        creatingTodo || editingTodo;
+
     todoEditor.classList.remove(
         "hidden"
+    );
+
+    /*
+     * Sichtbare Kennzeichnung des Modus.
+     */
+    todoEditor.classList.toggle(
+        "readonly-mode",
+        !editable
+    );
+
+    todoEditor.classList.toggle(
+        "edit-mode",
+        editable
     );
 
 
@@ -1236,10 +2541,21 @@ function updateTodoEditor() {
     }
 
 
+    updateTodoEditorModeIndicator(
+        editable
+    );
+
+
     if (todoTitleInput) {
 
         todoTitleInput.value =
             selectedTodo.summary || "";
+
+        todoTitleInput.disabled =
+            false;
+
+        todoTitleInput.readOnly =
+            !editable;
 
     }
 
@@ -1248,6 +2564,12 @@ function updateTodoEditor() {
 
         todoDescriptionInput.value =
             selectedTodo.description || "";
+
+        todoDescriptionInput.disabled =
+            false;
+
+        todoDescriptionInput.readOnly =
+            !editable;
 
     }
 
@@ -1261,8 +2583,17 @@ function updateTodoEditor() {
 
 
     if (todoProgressInput) {
+
         todoProgressInput.value =
             progress;
+
+        /*
+         * Range-Inputs besitzen kein readOnly.
+         * Deshalb im Readonly-Modus deaktivieren.
+         */
+        todoProgressInput.disabled =
+            !editable;
+
     }
 
     if (todoProgressValue) {
@@ -1273,12 +2604,15 @@ function updateTodoEditor() {
     }
 
 
-    if (todoStartValue) {
+    if (todoStartInput) {
 
-        todoStartValue.textContent =
-            formatIcsDate(
+        todoStartInput.value =
+            formatDateInputValue(
                 selectedTodo.dtstart
-            ) || "-";
+            );
+
+        todoStartInput.disabled =
+            !editable;
 
     }
 
@@ -1293,14 +2627,59 @@ function updateTodoEditor() {
     }
 
 
-    if (todoDurationValue) {
+    if (todoDurationInput) {
 
-        todoDurationValue.textContent =
+        const durationText =
             calculateTodoDuration(
                 selectedTodo.dtstart,
                 selectedTodo.due
             );
 
+        const durationMatch =
+            String(durationText).match(
+                /^(\d+)/
+            );
+
+        todoDurationInput.value =
+            durationMatch
+                ? durationMatch[1]
+                : "1";
+
+        todoDurationInput.disabled =
+            !editable;
+
+    }
+
+
+    /*
+     * Speichern und Abbrechen sind nur im
+     * Bearbeitungsmodus aktiv.
+     */
+    const saveButton =
+        document.getElementById(
+            "todoSaveButton"
+        );
+
+    const cancelButton =
+        document.getElementById(
+            "todoCancelButton"
+        );
+
+    if (saveButton) {
+        saveButton.disabled =
+            !editable;
+    }
+
+    /*
+     * Abbrechen bedeutet:
+     * "Editor/Anzeige schließen".
+     *
+     * Deshalb ist der Button auch im READ-ONLY-Modus
+     * aktiv.
+     */
+    if (cancelButton) {
+        cancelButton.disabled =
+            false;
     }
 
 }
@@ -1308,14 +2687,112 @@ function updateTodoEditor() {
 
 function hideTodoEditor() {
 
+    editingTodo = false;
+
     if (todoEditor) {
 
         todoEditor.classList.add(
             "hidden"
         );
 
+        todoEditor.classList.remove(
+            "readonly-mode",
+            "edit-mode"
+        );
+
     }
 
+    const badge =
+        document.getElementById(
+            "todoEditorModeBadge"
+        );
+
+    if (badge) {
+        badge.remove();
+    }
+
+}
+
+
+function formatDateInputValue(value) {
+
+    if (!value) {
+        return "";
+    }
+
+    const text =
+        String(value).trim();
+
+    const match =
+        text.match(
+            /^(\d{4})(\d{2})(\d{2})/
+        );
+
+    if (!match) {
+        return "";
+    }
+
+    return (
+        `${match[1]}-${match[2]}-${match[3]}`
+    );
+}
+
+
+function dateInputToIcs(value) {
+
+    if (!value) {
+        return "";
+    }
+
+    return String(value)
+        .replaceAll("-", "");
+}
+
+
+function calculateDueFromStartDuration(
+    startIcs,
+    duration
+) {
+
+    if (!startIcs) {
+        return "";
+    }
+
+    const startDate =
+        parseIcsDate(startIcs);
+
+    const days =
+        Number(duration);
+
+    if (
+        !startDate ||
+        !Number.isInteger(days) ||
+        days < 1
+    ) {
+        return "";
+    }
+
+    const dueDate =
+        new Date(startDate);
+
+    dueDate.setDate(
+        dueDate.getDate() +
+        days -
+        1
+    );
+
+    const yyyy =
+        String(dueDate.getFullYear());
+
+    const mm =
+        String(dueDate.getMonth() + 1)
+            .padStart(2, "0");
+
+    const dd =
+        String(dueDate.getDate())
+            .padStart(2, "0");
+
+    return `${yyyy}${mm}${dd}`;
 }
 
 
@@ -1359,6 +2836,86 @@ function calculateTodoDuration(
 
 
 /*
+ * Start/Dauer beim Erzeugen eines neuen Tasks.
+ *
+ * Das Fälligkeitsdatum wird sofort neu berechnet.
+ */
+
+function updateNewTaskDates() {
+
+    if (!creatingTodo || !selectedTodo) {
+        return;
+    }
+
+    const startIcs =
+        dateInputToIcs(
+            todoStartInput?.value || ""
+        );
+
+    const duration =
+        Number(
+            todoDurationInput?.value || 0
+        );
+
+    if (!startIcs) {
+        if (todoDueValue) {
+            todoDueValue.textContent = "-";
+        }
+        return;
+    }
+
+    if (
+        !Number.isInteger(duration) ||
+        duration < 1
+    ) {
+        if (todoDueValue) {
+            todoDueValue.textContent = "-";
+        }
+        return;
+    }
+
+    const dueIcs =
+        calculateDueFromStartDuration(
+            startIcs,
+            duration
+        );
+
+    selectedTodo.dtstart =
+        startIcs;
+
+    selectedTodo.due =
+        dueIcs;
+
+    selectedTodo.dtstartParameters =
+        "VALUE=DATE";
+
+    selectedTodo.dueParameters =
+        "VALUE=DATE";
+
+    if (todoDueValue) {
+
+        todoDueValue.textContent =
+            formatIcsDate(
+                dueIcs
+            ) || "-";
+
+    }
+}
+
+
+todoStartInput?.addEventListener(
+    "input",
+    updateNewTaskDates
+);
+
+
+todoDurationInput?.addEventListener(
+    "input",
+    updateNewTaskDates
+);
+
+
+/*
  * Progress slider.
  */
 todoProgressInput?.addEventListener(
@@ -1396,7 +2953,47 @@ document
     .getElementById("todoCancelButton")
     ?.addEventListener(
         "click",
-        () => updateTodoEditor()
+        () => {
+
+            if (creatingTodo) {
+
+                creatingTodo = false;
+                editingTodo = false;
+                selectedTodo = null;
+
+                hideTodoEditor();
+                updateSelectionButtons();
+
+                displayTodos(
+                    currentTodos
+                );
+
+                setStatus(
+                    "Neuer Task verworfen."
+                );
+
+                return;
+            }
+
+            /*
+             * Bestehenden Task bearbeiten:
+             * Änderungen verwerfen und Editor schließen.
+             * Der Task bleibt ausgewählt.
+             */
+            editingTodo = false;
+
+            hideTodoEditor();
+
+            updateSelectionButtons();
+
+            displayTodos(
+                currentTodos
+            );
+
+            setStatus(
+                "Bearbeitung abgebrochen."
+            );
+        }
     );
 
 
@@ -1412,6 +3009,12 @@ renameTaskButton?.addEventListener(
         if (!selectedTodo) {
             return;
         }
+
+        /*
+         * Jetzt ausdrücklich in den Bearbeitungsmodus
+         * wechseln.
+         */
+        editingTodo = true;
 
         updateTodoEditor();
 
@@ -1449,16 +3052,6 @@ async function saveSelectedTodo() {
         return;
     }
 
-    if (!selectedTodo.href) {
-
-        setStatus(
-            "PUT: VTODO has no resource URL."
-        );
-
-        return;
-
-    }
-
 
     const calendarUrl =
         document
@@ -1477,6 +3070,16 @@ async function saveSelectedTodo() {
             .value;
 
 
+    if (!calendarUrl) {
+
+        setStatus(
+            "PUT: Keine CalDAV-Kalender-URL."
+        );
+
+        return;
+    }
+
+
     const summary =
         todoTitleInput?.value.trim() || "";
 
@@ -1489,7 +3092,6 @@ async function saveSelectedTodo() {
         todoTitleInput?.focus();
 
         return;
-
     }
 
 
@@ -1501,6 +3103,225 @@ async function saveSelectedTodo() {
         Number(
             todoProgressInput?.value || 0
         );
+
+
+    /*
+     * --------------------------------------------------------
+     * Neuer Task
+     * --------------------------------------------------------
+     */
+
+    if (creatingTodo) {
+
+        const uid =
+            selectedTodo.uid ||
+            crypto.randomUUID();
+
+        selectedTodo.uid =
+            uid;
+
+        selectedTodo.summary =
+            summary;
+
+        selectedTodo.description =
+            description;
+
+        selectedTodo.percentComplete =
+            Number.isFinite(percent)
+                ? percent
+                : 0;
+
+        selectedTodo.status =
+            "NEEDS-ACTION";
+
+
+        /*
+         * Start + Dauer -> Fälligkeitsdatum.
+         */
+
+        const startInputValue =
+            todoStartInput?.value || "";
+
+        const duration =
+            Number(
+                todoDurationInput?.value || 0
+            );
+
+        const startIcs =
+            dateInputToIcs(
+                startInputValue
+            );
+
+        if (
+            !Number.isInteger(duration) ||
+            duration < 1
+        ) {
+
+            setStatus(
+                "PUT: Dauer muss mindestens 1 Tag sein."
+            );
+
+            todoDurationInput?.focus();
+
+            return;
+
+        }
+
+        const dueIcs =
+            calculateDueFromStartDuration(
+                startIcs,
+                duration
+            );
+
+        if (!dueIcs) {
+
+            setStatus(
+                "PUT: Start/Dauer konnten nicht berechnet werden."
+            );
+
+            return;
+
+        }
+
+        selectedTodo.dtstart =
+            startIcs;
+
+        selectedTodo.due =
+            dueIcs;
+
+        selectedTodo.dtstartParameters =
+            "VALUE=DATE";
+
+        selectedTodo.dueParameters =
+            "VALUE=DATE";
+
+
+        /*
+         * CalDAV-Ressource für einen neuen VTODO.
+         *
+         * Die Kalender-URL bleibt unverändert.
+         */
+        const resourceUrl =
+            `${calendarUrl.replace(/\/+$/, "")}/${uid}.ics`;
+
+
+        const body =
+            buildVTodoIcs(
+                selectedTodo,
+                {
+                    summary,
+                    description,
+                    percentComplete:
+                        selectedTodo.percentComplete
+                }
+            );
+
+
+        setStatus("PUT neuer Task ...");
+
+        headersElement.textContent = "";
+        responseElement.textContent = "";
+
+
+        try {
+
+            const result =
+                await executeCalDavRequest({
+                    operation: "PUT",
+                    url: resourceUrl,
+                    username,
+                    password,
+                    body
+                });
+
+
+            headersElement.textContent =
+                result.headers || "";
+
+            responseElement.textContent =
+                result.body || "";
+
+
+            if (
+                result.status >= 200 &&
+                result.status < 300
+            ) {
+
+                setStatus(
+                    `PUT: HTTP ${result.status} ${result.statusText}`
+                );
+
+                /*
+                 * Ab jetzt ist es ein normaler bestehender Task.
+                 */
+                creatingTodo = false;
+                editingTodo = false;
+
+                /*
+                 * REPORT lädt den Task neu vom Server.
+                 */
+                const createdUid =
+                    uid;
+
+                await loadTodos();
+
+                /*
+                 * Der neue Task wurde erfolgreich gespeichert.
+                 * Danach den Editor schließen und die normale
+                 * Planungsansicht anzeigen.
+                 */
+                selectedTodo = null;
+
+                hideTodoEditor();
+
+                updateSelectionButtons();
+
+                displayTodos(
+                    currentTodos
+                );
+
+                window.alert(
+                    `Task "${summary}" wurde erfolgreich gespeichert.`
+                );
+
+            } else {
+
+                setStatus(
+                    `PUT: HTTP ${result.status} ${result.statusText}`
+                );
+
+            }
+
+
+        } catch (error) {
+
+            setStatus(
+                "PUT neuer Task: ERROR"
+            );
+
+            responseElement.textContent =
+                `${error.name}: ${error.message}`;
+
+        }
+
+        return;
+    }
+
+
+    /*
+     * --------------------------------------------------------
+     * Bestehenden Task speichern
+     * --------------------------------------------------------
+     */
+
+    if (!selectedTodo.href) {
+
+        setStatus(
+            "PUT: VTODO has no resource URL."
+        );
+
+        return;
+    }
 
 
     const body =
@@ -1518,6 +3339,7 @@ async function saveSelectedTodo() {
 
 
     setStatus("PUT ...");
+
 
     try {
 
@@ -1552,6 +3374,27 @@ async function saveSelectedTodo() {
 
             await loadTodos();
 
+            editingTodo = false;
+
+            /*
+             * PUT erfolgreich:
+             * Bearbeitungsbereich schließen und Auswahl
+             * zurücksetzen.
+             */
+            selectedTodo = null;
+
+            hideTodoEditor();
+
+            updateSelectionButtons();
+
+            displayTodos(
+                currentTodos
+            );
+
+            window.alert(
+                `Task "${summary}" wurde erfolgreich gespeichert.`
+            );
+
         } else {
 
             setStatus(
@@ -1570,7 +3413,6 @@ async function saveSelectedTodo() {
     }
 
 }
-
 
 function resolveResourceUrl(
     calendarUrl,
@@ -2424,24 +4266,414 @@ toolbarDebug(
 );
 
 
-for (const id of [
-    "newTaskButton",
+/*
+ * =========================================================
+ * Neuer Task
+ * =========================================================
+ *
+ * Der vorhandene VTODO-Editor wird auch für neue Tasks
+ * verwendet. Erst "Speichern" erzeugt die CalDAV-Ressource.
+ */
+
+document
+    .getElementById("newTaskButton")
+    ?.addEventListener(
+        "click",
+        () => {
+
+            /*
+             * Falls bereits ein neuer Task bearbeitet wird,
+             * nicht noch einen zweiten erzeugen.
+             */
+            if (creatingTodo) {
+                return;
+            }
+
+
+            /*
+             * Den bisher ausgewählten Task merken.
+             *
+             * Ein neuer Task wird als Geschwister des
+             * ausgewählten Tasks angelegt. Ohne Auswahl
+             * entsteht ein neuer Root-Task.
+             */
+            const referenceTodo =
+                selectedTodo &&
+                !creatingTodo
+                    ? selectedTodo
+                    : null;
+
+
+            const placement =
+                getNewTaskPlacement(
+                    referenceTodo
+                );
+
+
+            const uid =
+                crypto.randomUUID();
+
+
+            selectedTodo = {
+
+                uid,
+
+                href: "",
+
+                summary: "",
+
+                description: "",
+
+                status: "NEEDS-ACTION",
+
+                percentComplete: 0,
+
+                dtstart: null,
+
+                due: null,
+
+                wbs: placement.wbs,
+
+                parent: placement.parent,
+
+                order: placement.order
+
+            };
+
+
+            creatingTodo = true;
+            editingTodo = true;
+
+
+            /*
+             * Editor öffnen und leeren Task anzeigen.
+             */
+            updateTodoEditor();
+
+
+            /*
+             * Beim Anlegen eines neuen Tasks müssen die
+             * Editfelder ausdrücklich aktiv sein.
+             *
+             * Der normale Auswahlzustand kann Buttons
+             * deaktivieren; die eigentlichen Editfelder
+             * dürfen davon aber nicht betroffen sein.
+             */
+            if (todoTitleInput) {
+
+                todoTitleInput.disabled = false;
+                todoTitleInput.readOnly = false;
+                todoTitleInput.value = "";
+
+            }
+
+
+            if (todoDescriptionInput) {
+
+                todoDescriptionInput.disabled = false;
+                todoDescriptionInput.readOnly = false;
+                todoDescriptionInput.value = "";
+
+            }
+
+
+            if (todoProgressInput) {
+
+                todoProgressInput.disabled = false;
+                todoProgressInput.value = 0;
+
+            }
+
+
+            if (todoProgressValue) {
+
+                todoProgressValue.textContent =
+                    "0 %";
+
+            }
+
+
+            /*
+             * Start + Dauer beim Erzeugen eines neuen Tasks.
+             *
+             * Default:
+             *   Start  = heute
+             *   Dauer  = 1 Tag
+             *
+             * Das Fälligkeitsdatum wird daraus berechnet.
+             */
+
+            const today =
+                new Date();
+
+            const todayIcs =
+                `${today.getFullYear()}${String(
+                    today.getMonth() + 1
+                ).padStart(2, "0")}${String(
+                    today.getDate()
+                ).padStart(2, "0")}`;
+
+            selectedTodo.dtstart =
+                todayIcs;
+
+            selectedTodo.due =
+                calculateDueFromStartDuration(
+                    todayIcs,
+                    1
+                );
+
+            selectedTodo.dtstartParameters =
+                "VALUE=DATE";
+
+            selectedTodo.dueParameters =
+                "VALUE=DATE";
+
+
+            if (todoStartInput) {
+
+                todoStartInput.disabled =
+                    false;
+
+                todoStartInput.value =
+                    formatDateInputValue(
+                        todayIcs
+                    );
+
+            }
+
+
+            if (todoDurationInput) {
+
+                todoDurationInput.disabled =
+                    false;
+
+                todoDurationInput.value =
+                    "1";
+
+            }
+
+
+            if (todoDueValue) {
+
+                todoDueValue.textContent =
+                    formatIcsDate(
+                        selectedTodo.due
+                    );
+
+            }
+
+
+            /*
+             * Save/Cancel müssen ebenfalls bedienbar sein.
+             */
+            const saveButton =
+                document.getElementById(
+                    "todoSaveButton"
+                );
+
+            const cancelButton =
+                document.getElementById(
+                    "todoCancelButton"
+                );
+
+            if (saveButton) {
+                saveButton.disabled = false;
+            }
+
+            if (cancelButton) {
+                cancelButton.disabled = false;
+            }
+
+
+            /*
+             * Erst jetzt den Cursor setzen.
+             */
+            requestAnimationFrame(() => {
+
+                if (todoTitleInput) {
+
+                    todoTitleInput.focus();
+
+                    todoTitleInput.select();
+
+                }
+
+            });
+
+
+            updateSelectionButtons();
+
+
+
+
+
+            setStatus(
+                "Neuer Task – Daten eingeben und speichern."
+            );
+
+        }
+    );
+
+
+/*
+ * =========================================================
+ * WBS / Reihenfolge
+ * =========================================================
+ */
+
+toolbarDebug(
     "indentButton",
+    async () => {
+
+        await moveSelectedTodoStructure(
+            "indent"
+        );
+
+    }
+);
+
+
+toolbarDebug(
     "outdentButton",
+    async () => {
+
+        await moveSelectedTodoStructure(
+            "outdent"
+        );
+
+    }
+);
+
+
+toolbarDebug(
     "moveUpButton",
+    async () => {
+
+        await moveSelectedTodoStructure(
+            "up"
+        );
+
+    }
+);
+
+
+toolbarDebug(
     "moveDownButton",
+    async () => {
+
+        await moveSelectedTodoStructure(
+            "down"
+        );
+
+    }
+);
+
+
+/*
+ * =========================================================
+ * Timeline Zoom
+ * =========================================================
+ */
+
+toolbarDebug(
     "zoomDayButton",
+    async () => {
+
+        timelineZoom = "day";
+
+        console.log(
+            "[TB-PLANNER DEBUG] Zoom -> day"
+        );
+
+        displayTodos(currentTodos);
+
+    }
+);
+
+
+toolbarDebug(
     "zoomWeekButton",
+    async () => {
+
+        timelineZoom = "week";
+
+        console.log(
+            "[TB-PLANNER DEBUG] Zoom -> week"
+        );
+
+        displayTodos(currentTodos);
+
+    }
+);
+
+
+toolbarDebug(
     "zoomMonthButton",
-    "zoomYearButton"
-]) {
+    async () => {
 
-    toolbarDebug(
-        id,
-        async () => {
+        timelineZoom = "month";
 
-            console.log(
-                `[TB-PLANNER DEBUG] ${id}: noch nicht implementiert`
+        console.log(
+            "[TB-PLANNER DEBUG] Zoom -> month"
+        );
+
+        displayTodos(
+            currentTodos
+        );
+
+    }
+);
+
+
+toolbarDebug(
+    "zoomYearButton",
+    async () => {
+
+        timelineZoom = "kw";
+
+        console.log(
+            "[TB-PLANNER DEBUG] Zoom -> kw"
+        );
+
+        displayTodos(
+            currentTodos
+        );
+
+    }
+);
+
+
+console.log(
+    "[TB-PLANNER DEBUG] Toolbar-Debug initialisiert."
+);
+
+
+/* FIX: funktionierender Abbrechen-Button */
+
+/* FIX: funktionierender Abbrechen-Button */
+
+const todoCancelButtonFix =
+    document.getElementById("todoCancelButton");
+
+if (todoCancelButtonFix) {
+
+    todoCancelButtonFix.addEventListener(
+        "click",
+        event => {
+
+            event.preventDefault();
+            event.stopPropagation();
+
+            /*
+             * Aktuelle Bearbeitung beenden.
+             * Die Auswahl bleibt erhalten, damit der Task
+             * weiterhin markiert ist und erneut über
+             * "Titel ändern" bearbeitet werden kann.
+             */
+            todoEditor.classList.add("hidden");
+
+            setStatus(
+                "Bearbeitung abgebrochen."
             );
 
         }
@@ -2449,7 +4681,3 @@ for (const id of [
 
 }
 
-
-console.log(
-    "[TB-PLANNER DEBUG] Toolbar-Debug initialisiert."
-);

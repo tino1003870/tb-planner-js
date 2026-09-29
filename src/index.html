@@ -2,119 +2,410 @@
 <html lang="de">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>TB Planner JS – CalDAV Test</title>
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>TB Planner</title>
+
     <link rel="stylesheet" href="css/style.css">
 </head>
 
 <body>
 
-<header>
-    <h1>TB Planner JS – CalDAV Test</h1>
-</header>
+<header class="planner-header">
 
-<main>
+    <div class="title-row">
+        <h1>TB Planner</h1>
+    </div>
 
-    <section class="connection">
-        <h2>Connection</h2>
+    <div class="connection-row">
 
-        <label>
-            CalDAV URL
-            <input id="serverUrl"
-                   type="url"
-                   value="https://caldav.web.de/begenda/dav/bofhdd@web.de/calendar">
-        </label>
-
-        <label>
-            Username
-            <input id="username"
-                   type="text"
-                   value="bofhdd@web.de"
-                   autocomplete="username">
-        </label>
-
-        <label>
-            Password
-            <input id="password"
-                   type="password"
-                   autocomplete="current-password">
-        </label>
-    </section>
-
-    <section class="operations">
-        <h2>Operations</h2>
-
-        <button data-operation="OPTIONS">OPTIONS</button>
-        <button data-operation="PROPFIND">PROPFIND</button>
-        <button data-operation="REPORT">REPORT</button>
+        <label for="serverUrl">Kalender:</label>
 
         <input
-            id="newTaskSummary"
+            id="serverUrl"
             type="text"
-            placeholder="Summary für neuen Task"
-            value="TB-PLANNER-NEW">
+            value="https://caldav.web.de/begenda/dav/bofhdd@web.de/calendar"
+        >
 
-        <button id="newTaskButton" type="button">NEW TASK</button>
+    </div>
 
-        <button data-operation="GET">GET</button>
-        <button data-operation="PUT">PUT</button>
-        <button data-operation="DELETE">DELETE</button>
-        
-    </section>
+    <div class="credentials-row">
 
-    <section class="status">
-        <h2>Status</h2>
+        <label for="username">Benutzer:</label>
 
-        <div id="status">
-            Ready
-        </div>
-    </section>
+        <input
+            id="username"
+            type="text"
+            value="bofhdd@web.de"
+        >
 
-    <section>
-        <h2>Response Headers</h2>
+        <label for="password">Passwort:</label>
 
-        <pre id="headers"></pre>
-    </section>
+        <input
+            id="password"
+            type="password"
+        >
 
-    <section>
-        <h2>Response Body</h2>
-
-        <pre id="response"></pre>
-    </section>
-
-    <section>
-        <h2>PUT Editor</h2>
-
-        <label>
-            ETag
-            <input id="etag" type="text" readonly>
-        </label>
-
-        <label>
-            Resource URL
-            <input id="resourceUrl" type="text">
-        </label>
-
-        <textarea id="putBody"
-                  rows="20"
-                  spellcheck="false"
-                  placeholder="GET a VTODO first..."></textarea>
-
-        <button id="putButton" type="button">
-            PUT
+        <button id="refreshButton" type="button">
+            Login and Load Tasklist
         </button>
+
+    </div>
+
+    <div class="planner-toolbar">
+
+        <div class="toolbar-section task-section">
+
+            <div class="toolbar-section-title">Task</div>
+
+            <div class="toolbar-group">
+
+                <button id="newTaskButton" type="button">
+                    Task erstellen
+                </button>
+
+                <button id="renameTaskButton" type="button" disabled>
+                    Titel ändern
+                </button>
+
+                <button id="deleteTaskButton" type="button" disabled>
+                    Task löschen
+                </button>
+
+            </div>
+
+        </div>
+
+
+        <div class="toolbar-section">
+
+            <div class="toolbar-section-title">Struktur</div>
+
+            <div class="toolbar-group">
+
+                <button id="indentButton" type="button" disabled>
+                    → Einrücken
+                </button>
+
+                <button id="outdentButton" type="button" disabled>
+                    ← Ausrücken
+                </button>
+
+                <button id="moveUpButton" type="button" disabled>
+                    ↑
+                </button>
+
+                <button id="moveDownButton" type="button" disabled>
+                    ↓
+                </button>
+
+            </div>
+
+        </div>
+
+
+        <div class="toolbar-section">
+
+            <div class="toolbar-section-title">Termin</div>
+
+            <div class="toolbar-group">
+
+                <button id="previousWeekButton" type="button">
+                    − Woche
+                </button>
+
+                <button id="previousDayButton" type="button">
+                    − Tag
+                </button>
+
+                <button id="nextDayButton" type="button">
+                    + Tag
+                </button>
+
+                <button id="nextWeekButton" type="button">
+                    + Woche
+                </button>
+
+            </div>
+
+        </div>
+
+
+        <div class="toolbar-section">
+
+            <div class="toolbar-section-title">Dauer</div>
+
+            <div class="toolbar-group">
+
+                <button id="durationMinusButton" type="button">
+                    − Dauer
+                </button>
+
+                <button id="durationPlusButton" type="button">
+                    + Dauer
+                </button>
+
+            </div>
+
+        </div>
+
+
+        <div class="toolbar-section zoom-section">
+
+            <div class="toolbar-section-title">Ansicht</div>
+
+            <div class="toolbar-group zoom-group">
+
+                <button id="zoomDayButton" type="button">
+                    Tag
+                </button>
+
+                <button id="zoomWeekButton" type="button">
+                    Woche
+                </button>
+
+                <button id="zoomMonthButton" type="button">
+                    Monat
+                </button>
+
+                <button id="zoomYearButton" type="button">
+                    KW
+                </button>
+
+            </div>
+
+        </div>
+
+    </div>
+
+</header>
+
+
+<main class="planner-main">
+
+    <section class="planner">
+
+        <div class="planner-table-header">
+
+            <div class="wbs-header">
+                WBS
+            </div>
+
+            <div class="task-header">
+                Aufgabe
+            </div>
+
+            <div
+                id="timelineHeader"
+                class="timeline-header"
+            >
+                <!-- timeline generated by JavaScript -->
+            </div>
+
+        </div>
+
+
+        <div
+            id="plannerRows"
+            class="planner-rows"
+        >
+            <!-- planner rows generated by JavaScript -->
+        </div>
+
     </section>
 
-    <section>
-        <h2>VTODOs</h2>
+<section
+    id="todoEditor"
+    class="todo-editor hidden"
+>
 
-        <pre id="todos"></pre>
+    <div class="todo-editor-header">
 
-    <h2>Debug</h2>
-    <pre id="debug"></pre>
-    </section>
+        <strong>VTODO bearbeiten</strong>
+
+        <span id="todoEditorTask"></span>
+
+    </div>
+
+
+    <div class="todo-editor-body">
+
+        <div class="editor-field">
+
+            <label for="todoTitleInput">
+                Titel:
+            </label>
+
+            <input
+                id="todoTitleInput"
+                type="text"
+                autocomplete="off"
+            >
+
+        </div>
+
+
+        <div class="editor-field">
+
+            <label for="todoDescriptionInput">
+                Beschreibung:
+            </label>
+
+            <textarea
+                id="todoDescriptionInput"
+                rows="5"
+                placeholder="Beschreibung des Tasks ..."
+            ></textarea>
+
+        </div>
+
+
+        <div class="editor-field">
+
+            <label for="todoProgressInput">
+                Erfüllungsgrad:
+            </label>
+
+            <div class="progress-editor">
+
+                <input
+                    id="todoProgressInput"
+                    type="range"
+                    min="0"
+                    max="100"
+                    step="1"
+                    value="0"
+                >
+
+                <output id="todoProgressValue">
+                    0 %
+                </output>
+
+            </div>
+
+        </div>
+
+
+        <div class="editor-info-grid">
+
+            <div>
+
+                <label for="todoStartInput">
+                    Start:
+                </label>
+
+                <input
+                    id="todoStartInput"
+                    type="date"
+                    disabled
+                >
+
+            </div>
+
+
+            <div>
+
+                <label>
+                    Fällig:
+                </label>
+
+                <span id="todoDueValue">
+                    -
+                </span>
+
+            </div>
+
+
+            <div>
+
+                <label for="todoDurationInput">
+                    Dauer:
+                </label>
+
+                <input
+                    id="todoDurationInput"
+                    type="number"
+                    min="1"
+                    step="1"
+                    value="1"
+                    disabled
+                >
+
+                <span>Tag(e)</span>
+
+            </div>
+
+        </div>
+
+
+        <div class="todo-editor-actions">
+
+            <button
+                id="todoSaveButton"
+                type="button"
+            >
+                Speichern
+            </button>
+
+
+            <button
+                id="todoCancelButton"
+                type="button"
+            >
+                Abbrechen
+            </button>
+
+
+            <button
+                id="todoDeleteButton"
+                type="button"
+                class="danger-button"
+            >
+                Task löschen
+            </button>
+
+        </div>
+
+    </div>
+
+</section>
+
+
 
 </main>
+
+
+<footer class="planner-footer">
+
+    <span id="status">
+        Bereit
+    </span>
+
+</footer>
+
+
+<!--
+    Debug output is deliberately kept in the DOM.
+    It can be hidden later without removing the functionality.
+-->
+
+<section class="debug-panel">
+
+    <details>
+
+        <summary>CalDAV Debug</summary>
+
+        <pre id="headers"></pre>
+
+        <pre id="response"></pre>
+
+    </details>
+
+</section>
+
 
 <script type="module" src="js/app.js"></script>
 
