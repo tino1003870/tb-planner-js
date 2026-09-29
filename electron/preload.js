@@ -17,6 +17,17 @@ contextBridge.exposeInMainWorld("electronAPI", {
             "print-preview-pdf"
         ),
 
+    exportTasks: tasks =>
+        ipcRenderer.invoke(
+            "export-tasks",
+            tasks
+        ),
+
+    importTasks: () =>
+        ipcRenderer.invoke(
+            "import-tasks"
+        ),
+
         caldavRequest: (request) =>
         ipcRenderer.invoke("caldav-request", request)
 });

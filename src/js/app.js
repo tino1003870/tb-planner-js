@@ -144,6 +144,574 @@ const debugElement =
 
 let currentTodos = [];
 
+/*
+ * =========================================================
+ * JSON Export
+ * =========================================================
+ */
+
+async function exportPlannerTasks() {
+
+    if (
+        !window.electronAPI ||
+        typeof window.electronAPI.exportTasks !==
+            "function"
+    ) {
+
+        setStatus(
+            "Export: Electron-Funktion nicht verfügbar."
+        );
+
+        return;
+    }
+
+    try {
+
+        const result =
+            await window.electronAPI.exportTasks(
+                currentTodos
+            );
+
+        if (result?.success) {
+
+            setStatus(
+                `Export: ${result.filePath}`
+            );
+
+        } else if (result?.canceled) {
+
+            setStatus(
+                "Export abgebrochen."
+            );
+
+        } else {
+
+            setStatus(
+                `Export: ERROR – ${
+                    result?.failureReason ||
+                    "unbekannter Fehler"
+                }`
+            );
+
+        }
+
+    } catch (error) {
+
+        console.error(
+            "EXPORT ERROR:",
+            error
+        );
+
+        setStatus(
+            `Export: ERROR – ${error.message}`
+        );
+
+    }
+
+}
+
+
+/*
+ * =========================================================
+ * JSON Import
+ * =========================================================
+ */
+
+async function importPlannerTasks() {
+
+    if (
+        !window.electronAPI ||
+        typeof window.electronAPI.importTasks !==
+            "function"
+    ) {
+
+        setStatus(
+            "Import: Electron-Funktion nicht verfügbar."
+        );
+
+        return;
+    }
+
+
+    /*
+     * --------------------------------------------------------
+     * 1. JSON-Datei auswählen und validieren
+     * --------------------------------------------------------
+     */
+
+    const importResult =
+        await window.electronAPI.importTasks();
+
+
+    if (importResult?.canceled) {
+
+        setStatus(
+            "Import abgebrochen."
+        );
+
+        return;
+    }
+
+
+    if (!importResult?.success) {
+
+        setStatus(
+            `Import: ERROR – ${
+                importResult?.failureReason ||
+                "Datei konnte nicht gelesen werden."
+            }`
+        );
+
+        return;
+    }
+
+
+    const imported =
+        importResult.data.tasks;
+
+
+    if (!Array.isArray(imported)) {
+
+        setStatus(
+            "Import: Keine Taskliste gefunden."
+        );
+
+        return;
+    }
+
+
+    /*
+     * JSON-Inhalt prüfen.
+     */
+
+    for (const task of imported) {
+
+        if (!task || typeof task !== "object") {
+
+            setStatus(
+                "Import: Ungültiger Task in der JSON-Datei."
+            );
+
+            return;
+        }
+
+        if (!task.uid) {
+
+            setStatus(
+                "Import: Task ohne UID gefunden."
+            );
+
+            return;
+        }
+
+        if (!task.summary) {
+
+            setStatus(
+                `Import: Task ${task.uid} hat keinen Titel.`
+            );
+
+            return;
+        }
+
+    }
+
+
+    /*
+     * --------------------------------------------------------
+     * 2. Sicherheitsabfrage
+     * --------------------------------------------------------
+     */
+
+    const confirmed =
+        window.confirm(
+            `Import von ${imported.length} Task(s).\n\n` +
+            "Alle aktuell vorhandenen Tasks im Kalender " +
+            "werden vorher gelöscht.\n\n" +
+            "Fortfahren?"
+        );
+
+
+    if (!confirmed) {
+
+        setStatus(
+            "Import abgebrochen."
+        );
+
+        return;
+    }
+
+
+    /*
+     * --------------------------------------------------------
+     * 3. Zugangsdaten / Kalender
+     * --------------------------------------------------------
+     */
+
+    const calendarUrl =
+        document
+            .getElementById("serverUrl")
+            .value
+            .trim();
+
+    const username =
+        document
+            .getElementById("username")
+            .value;
+
+    const password =
+        document
+            .getElementById("password")
+            .value;
+
+
+    if (!calendarUrl) {
+
+        setStatus(
+            "Import: Keine CalDAV-Kalender-URL."
+        );
+
+        return;
+    }
+
+
+    /*
+     * --------------------------------------------------------
+     * 4. Importreihenfolge bestimmen
+     *
+     * Parent immer vor Child.
+     *
+     * WBS ist dabei die primäre Hierarchieinformation.
+     * Bei gleicher WBS-Tiefe entscheidet order.
+     * --------------------------------------------------------
+     */
+
+    const importTasks =
+        [...imported].sort(
+            (a, b) => {
+
+                const aw =
+                    String(a.wbs || "")
+                        .split(".")
+                        .filter(Boolean)
+                        .map(Number);
+
+                const bw =
+                    String(b.wbs || "")
+                        .split(".")
+                        .filter(Boolean)
+                        .map(Number);
+
+                const depth =
+                    aw.length - bw.length;
+
+                if (depth !== 0) {
+                    return depth;
+                }
+
+                const max =
+                    Math.max(
+                        aw.length,
+                        bw.length
+                    );
+
+                for (
+                    let i = 0;
+                    i < max;
+                    i++
+                ) {
+
+                    const av =
+                        aw[i] ?? 0;
+
+                    const bv =
+                        bw[i] ?? 0;
+
+                    if (av !== bv) {
+                        return av - bv;
+                    }
+
+                }
+
+                return (
+                    Number(a.order ?? 0) -
+                    Number(b.order ?? 0)
+                );
+
+            }
+        );
+
+
+    /*
+     * --------------------------------------------------------
+     * 5. Bestehende Tasks löschen
+     * --------------------------------------------------------
+     */
+
+    setStatus(
+        `Import: lösche ${currentTodos.length} vorhandene Task(s) ...`
+    );
+
+
+    for (const todo of currentTodos) {
+
+        if (!todo.href) {
+
+            setStatus(
+                `Import: Task "${todo.summary || todo.uid}" ` +
+                "hat keine Ressourcen-URL."
+            );
+
+            return;
+        }
+
+
+        try {
+
+            const result =
+                await executeCalDavRequest({
+                    operation: "DELETE",
+
+                    url:
+                        resolveResourceUrl(
+                            calendarUrl,
+                            todo.href
+                        ),
+
+                    username,
+                    password
+                });
+
+
+            if (
+                result.status < 200 ||
+                result.status >= 300
+            ) {
+
+                setStatus(
+                    `Import: DELETE Fehler bei ` +
+                    `"${todo.summary || todo.uid}" – ` +
+                    `HTTP ${result.status}`
+                );
+
+                return;
+            }
+
+        } catch (error) {
+
+            setStatus(
+                `Import: DELETE ERROR – ${error.message}`
+            );
+
+            return;
+        }
+
+    }
+
+
+    /*
+     * --------------------------------------------------------
+     * 6. Tasks neu anlegen
+     *
+     * Parent-Tasks stehen wegen der Sortierung vor
+     * ihren Kindern.
+     * --------------------------------------------------------
+     */
+
+    const createdTodos = [];
+
+
+    for (
+        let index = 0;
+        index < importTasks.length;
+        index++
+    ) {
+
+        const source =
+            importTasks[index];
+
+
+        /*
+         * UID aus dem Export unverändert übernehmen.
+         */
+
+        const todo = {
+
+            ...source,
+
+            uid:
+                source.uid,
+
+            /*
+             * Server-spezifische Werte niemals aus dem
+             * alten Export übernehmen.
+             */
+            href: "",
+
+            etag: "",
+
+            summary:
+                source.summary || "",
+
+            description:
+                source.description || "",
+
+            status:
+                source.status ||
+                "NEEDS-ACTION",
+
+            percentComplete:
+                Number.isFinite(
+                    Number(
+                        source.percentComplete
+                    )
+                )
+                    ? Number(
+                        source.percentComplete
+                    )
+                    : 0,
+
+            wbs:
+                source.wbs || "",
+
+            parent:
+                source.parent || "",
+
+            order:
+                Number.isFinite(
+                    Number(source.order)
+                )
+                    ? Number(source.order)
+                    : index
+
+        };
+
+
+        /*
+         * Neue CalDAV-Ressource.
+         *
+         * UID bleibt erhalten, href wird neu aufgebaut.
+         */
+
+        const resourceUrl =
+            `${calendarUrl.replace(/\/+$/, "")}/${todo.uid}.ics`;
+
+
+        const body =
+            buildVTodoIcs(
+                todo,
+                {
+                    summary:
+                        todo.summary,
+
+                    description:
+                        todo.description,
+
+                    percentComplete:
+                        todo.percentComplete
+                }
+            );
+
+
+        setStatus(
+            `Import: ${index + 1}/${importTasks.length} – ` +
+            `"${todo.summary}" ...`
+        );
+
+
+        try {
+
+            const result =
+                await executeCalDavRequest({
+                    operation: "PUT",
+
+                    url:
+                        resourceUrl,
+
+                    username,
+                    password,
+
+                    body
+                });
+
+
+            if (
+                result.status < 200 ||
+                result.status >= 300
+            ) {
+
+                setStatus(
+                    `Import: PUT Fehler bei ` +
+                    `"${todo.summary}" – ` +
+                    `HTTP ${result.status}`
+                );
+
+                return;
+            }
+
+
+            todo.href =
+                resourceUrl;
+
+
+            createdTodos.push(todo);
+
+        } catch (error) {
+
+            setStatus(
+                `Import: PUT ERROR bei ` +
+                `"${todo.summary}" – ` +
+                error.message
+            );
+
+            return;
+        }
+
+    }
+
+
+    /*
+     * --------------------------------------------------------
+     * 7. Serverzustand neu laden
+     * --------------------------------------------------------
+     */
+
+    selectedTodo = null;
+    creatingTodo = false;
+    editingTodo = false;
+
+    hideTodoEditor();
+    updateSelectionButtons();
+
+
+    await loadTodos();
+
+
+    setStatus(
+        `Import: ${createdTodos.length} Task(s) erfolgreich importiert.`
+    );
+
+}
+
+/*
+ * Datei-Buttons verdrahten.
+ */
+
+document
+    .getElementById("exportButton")
+    ?.addEventListener(
+        "click",
+        exportPlannerTasks
+    );
+
+document
+    .getElementById("importButton")
+    ?.addEventListener(
+        "click",
+        importPlannerTasks
+    );
+
+
+
 let selectedTodo = null;
 
 let creatingTodo = false;

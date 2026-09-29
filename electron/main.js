@@ -151,6 +151,206 @@ ipcMain.handle("caldav-request", async (_event, request) => {
  * Electron druckt exakt den aktuell dargestellten Inhalt.
  */
 
+
+/*
+ * =========================================================
+ * JSON Export
+ * =========================================================
+ */
+
+ipcMain.handle(
+    "export-tasks",
+    async (event, todos) => {
+
+        if (!Array.isArray(todos)) {
+            return {
+                success: false,
+                failureReason:
+                    "Ungültige Taskliste."
+            };
+        }
+
+        const win =
+            BrowserWindow.fromWebContents(
+                event.sender
+            );
+
+        const result =
+            await dialog.showSaveDialog(
+                win,
+                {
+                    title:
+                        "TB Planner – Tasks exportieren",
+
+                    defaultPath:
+                        "TB-Planner.json",
+
+                    filters: [
+                        {
+                            name:
+                                "JSON-Dateien",
+                            extensions:
+                                ["json"]
+                        }
+                    ]
+                }
+            );
+
+        if (
+            result.canceled ||
+            !result.filePath
+        ) {
+            return {
+                success: false,
+                canceled: true
+            };
+        }
+
+        try {
+
+            const data = {
+
+                format:
+                    "tb-planner-json",
+
+                version:
+                    1,
+
+                exportedAt:
+                    new Date().toISOString(),
+
+                tasks:
+                    todos
+
+            };
+
+            await require("fs")
+                .promises
+                .writeFile(
+                    result.filePath,
+                    JSON.stringify(
+                        data,
+                        null,
+                        2
+                    ),
+                    "utf8"
+                );
+
+            return {
+                success: true,
+                filePath:
+                    result.filePath
+            };
+
+        } catch (error) {
+
+            return {
+                success: false,
+                failureReason:
+                    error.message
+            };
+
+        }
+
+    }
+);
+
+
+/*
+ * =========================================================
+ * JSON Import
+ * =========================================================
+ */
+
+ipcMain.handle(
+    "import-tasks",
+    async event => {
+
+        const win =
+            BrowserWindow.fromWebContents(
+                event.sender
+            );
+
+        const result =
+            await dialog.showOpenDialog(
+                win,
+                {
+                    title:
+                        "TB Planner – Tasks importieren",
+
+                    properties: [
+                        "openFile"
+                    ],
+
+                    filters: [
+                        {
+                            name:
+                                "JSON-Dateien",
+                            extensions:
+                                ["json"]
+                        }
+                    ]
+                }
+            );
+
+        if (
+            result.canceled ||
+            !result.filePaths.length
+        ) {
+            return {
+                success: false,
+                canceled: true
+            };
+        }
+
+        try {
+
+            const text =
+                await require("fs")
+                    .promises
+                    .readFile(
+                        result.filePaths[0],
+                        "utf8"
+                    );
+
+            const data =
+                JSON.parse(text);
+
+            if (
+                !data ||
+                data.format !==
+                    "tb-planner-json" ||
+                data.version !== 1 ||
+                !Array.isArray(data.tasks)
+            ) {
+
+                throw new Error(
+                    "Ungültiges TB-Planner-JSON-Format."
+                );
+
+            }
+
+            return {
+                success: true,
+                filePath:
+                    result.filePaths[0],
+                data
+            };
+
+        } catch (error) {
+
+            return {
+                success: false,
+                failureReason:
+                    error.message
+            };
+
+        }
+
+    }
+);
+
+
 /*
  * =========================================================
  * Druckvorschau
