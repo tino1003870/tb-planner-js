@@ -4,6 +4,10 @@ TB Planner JS is an Electron-based task planner that works with tasks stored as 
 
 The project is the JavaScript/Electron continuation of the TB Planner concept originally developed around Thunderbird.
 
+<p align="center">
+  <img src="./tb-planner-js.png" alt="TB Planner JS" width="1000">
+</p>
+
 ## Features
 
 ### Task management
