@@ -1,12 +1,42 @@
 {
-  "name": "tb-planner-js",
+  "name": "tb-planner",
   "version": "0.1.0",
   "description": "TB Planner JS",
   "main": "electron/main.js",
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "build": "electron-builder --linux AppImage"
   },
   "devDependencies": {
-    "electron": "^44.4.5"
+    "electron": "^44.6.0",
+    "electron-builder": "^26.15.3"
+  },
+  "dependencies": {
+    "debug": "^4.4.3",
+    "env-paths": "^3.0.0",
+    "graceful-fs": "^4.2.11",
+    "ms": "^2.1.3",
+    "progress": "^2.0.3",
+    "semver": "^7.8.5",
+    "sumchecker": "^3.0.1",
+    "undici-types": "^7.24.6"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tino1003870/tb-planner-js.git"
+  },
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/tino1003870/tb-planner-js/issues"
+  },
+  "homepage": "https://github.com/tino1003870/tb-planner-js#readme",
+  "build": {
+    "appId": "de.optocon.tbplanner",
+    "productName": "TB Planner",
+    "linux": {
+      "target": "AppImage",
+      "category": "Office"
+    }
   }
 }
